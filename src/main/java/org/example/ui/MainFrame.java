@@ -19,6 +19,7 @@ import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 
 import javafx.application.Platform;
+import javafx.concurrent.Worker;
 import javafx.embed.swing.JFXPanel;
 import javafx.embed.swing.SwingFXUtils;
 import javafx.scene.Scene;
@@ -26,12 +27,12 @@ import javafx.scene.SnapshotParameters;
 import javafx.scene.image.WritableImage;
 import javafx.scene.web.WebEngine;
 import javafx.scene.web.WebView;
-import javafx.concurrent.Worker;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.text.JTextComponent;
 
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
@@ -47,6 +48,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 public class MainFrame extends JFrame {
+
+    private static final String START_PLACEHOLDER = "Введите стартовый адрес";
+    private static final String ADDRESSES_PLACEHOLDER = "Введите адреса, которые надо посетить";
 
     // -------- UI --------
     private final JTextField startField = new JTextField();
@@ -83,6 +87,9 @@ public class MainFrame extends JFrame {
         addressesArea.setWrapStyleWord(true);
         table.setFillsViewportHeight(true);
 
+        // ✅ Увеличиваем шрифт в поле адресов доставок
+        addressesArea.setFont(addressesArea.getFont().deriveFont(15f));
+
         openMapsBtn.setEnabled(false);
         copyLinkBtn.setEnabled(false);
         exportCsvBtn.setEnabled(false);
@@ -102,21 +109,17 @@ public class MainFrame extends JFrame {
         exportCsvBtn.addActionListener(e -> onExportCsv());
         exportPdfBtn.addActionListener(e -> onExportPdf());
 
-        // Example
-        addressesArea.setText(String.join("\n",
-                "Alexanderplatz, Berlin",
-                "Brandenburger Tor, Berlin",
-                "Potsdamer Platz, Berlin",
-                "East Side Gallery, Berlin"
-        ));
-        startField.setText("Berlin Hauptbahnhof");
+        // ✅ Убираем стартовые примеры и ставим placeholder-подсказки
+        installPlaceholder(startField, START_PLACEHOLDER);
+        installPlaceholder(addressesArea, ADDRESSES_PLACEHOLDER);
     }
 
     private JPanel buildTopPanel() {
         JPanel p = new JPanel(new BorderLayout(8, 8));
 
         JPanel line1 = new JPanel(new BorderLayout(8, 8));
-        line1.add(new JLabel("Старт (опционально):"), BorderLayout.WEST);
+        // ✅ Убрали "(опционально)"
+        line1.add(new JLabel("Старт:"), BorderLayout.WEST);
         line1.add(startField, BorderLayout.CENTER);
 
         JPanel line2 = new JPanel(new BorderLayout(8, 8));
@@ -196,8 +199,14 @@ public class MainFrame extends JFrame {
                 RoutingProvider routing = new OrsClient(cfg);
                 RouteOptimizer opt = new RouteOptimizer(routing);
 
-                String start = startField.getText();
-                List<String> deliveries = parseAddresses(addressesArea.getText());
+                String startRaw = startField.getText();
+                String addressesRaw = addressesArea.getText();
+
+                // ✅ placeholder не должен считаться вводом
+                String start = (startRaw != null && startRaw.equals(START_PLACEHOLDER)) ? "" : startRaw;
+                String addrText = (addressesRaw != null && addressesRaw.equals(ADDRESSES_PLACEHOLDER)) ? "" : addressesRaw;
+
+                List<String> deliveries = parseAddresses(addrText);
                 if (deliveries.isEmpty()) throw new IllegalArgumentException("Добавь хотя бы 1 адрес доставки.");
 
                 // 1) Optimize order (matrix based)
@@ -356,6 +365,35 @@ public class MainFrame extends JFrame {
     }
 
     // =========================================================================================
+    // Placeholder helpers (серый подсказочный текст)
+    // =========================================================================================
+    private void installPlaceholder(JTextComponent field, String placeholder) {
+        Color placeholderColor = Color.GRAY;
+        Color normalColor = field.getForeground();
+
+        field.setForeground(placeholderColor);
+        field.setText(placeholder);
+
+        field.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override
+            public void focusGained(java.awt.event.FocusEvent e) {
+                if (field.getText().equals(placeholder)) {
+                    field.setText("");
+                    field.setForeground(normalColor);
+                }
+            }
+
+            @Override
+            public void focusLost(java.awt.event.FocusEvent e) {
+                if (field.getText().isBlank()) {
+                    field.setForeground(placeholderColor);
+                    field.setText(placeholder);
+                }
+            }
+        });
+    }
+
+    // =========================================================================================
     // Interactive Map via JavaFX WebView embedded into Swing (JFXPanel)
     // =========================================================================================
     private static class FxMapPanel extends JPanel {
@@ -369,13 +407,11 @@ public class MainFrame extends JFrame {
             setLayout(new BorderLayout());
             setBorder(BorderFactory.createTitledBorder("Карта (интерактивная)"));
             add(fxPanel, BorderLayout.CENTER);
-
             initFx();
         }
 
         private void initFx() {
             Platform.setImplicitExit(false);
-
             Platform.runLater(() -> {
                 webView = new WebView();
                 engine = webView.getEngine();
@@ -394,7 +430,6 @@ public class MainFrame extends JFrame {
             if (stops == null || stops.isEmpty() || routeLonLat == null || routeLonLat.size() < 2) return;
             if (engine == null) return;
 
-            // GeoJSON LineString (coordinates are [lon,lat])
             Map<String, Object> geojson = new LinkedHashMap<>();
             geojson.put("type", "Feature");
             Map<String, Object> geom = new LinkedHashMap<>();
@@ -420,9 +455,9 @@ public class MainFrame extends JFrame {
                 String geojsonStr = om.writeValueAsString(geojson);
                 String markersStr = om.writeValueAsString(markers);
 
-                Platform.runLater(() -> waitLoadedThen(() -> {
-                    engine.executeScript("window.__setRoute(" + geojsonStr + "," + markersStr + ");");
-                }));
+                Platform.runLater(() -> waitLoadedThen(() ->
+                        engine.executeScript("window.__setRoute(" + geojsonStr + "," + markersStr + ");")
+                ));
             } catch (Exception ignored) {}
         }
 
@@ -457,7 +492,6 @@ public class MainFrame extends JFrame {
         private void waitLoadedThen(Runnable r) {
             if (engine == null) return;
 
-            // document.readyState check (fast) + JavaFX worker state fallback
             Object ready = engine.executeScript("document.readyState");
             boolean domReady = "complete".equals(String.valueOf(ready)) || "interactive".equals(String.valueOf(ready));
 
@@ -475,7 +509,6 @@ public class MainFrame extends JFrame {
         }
 
         private String buildHtml() {
-            // Leaflet via CDN + OSM tiles
             return """
             <!doctype html>
             <html>
